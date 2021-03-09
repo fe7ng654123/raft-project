@@ -106,13 +106,13 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 		nextIndex:         nil,
 		matchIndex:        nil,
 		currentLearder:    -1,
-		electionTimeout:   10000,
-		heartBeatInterval: 500,
+		electionTimeout:   int32(electionTimeout),
+		heartBeatInterval: int32(heartBeatInterval),
 		//electionChan:      make(chan int32),
-		electionTimer:	   time.NewTimer(10*time.Second),
-		heartBeatTimer:	   time.NewTimer(100*time.Second),
+		electionTimer:	   time.NewTimer(time.Duration(electionTimeout) * time.Millisecond),
+		heartBeatTimer:	   time.NewTimer(time.Duration(heartBeatInterval) *time.Millisecond),
 	}
-
+	//log.Print("default heartbeat intervel = ", heartBeatInterval)
 
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", myport))
 
@@ -156,49 +156,59 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 		for {
 			select {
 			case t:= <-rn.electionTimer.C:{
+				if rn.serverState == raft.Role_Leader{
+					break
+				}
+				rn.resetElectionTimer()
 				log.Printf("ElectTimer triggered node %d timeout = %d, t = %s",rn.id, rn.electionTimeout, t)
 				rn.serverState = raft.Role_Candidate
 				rn.voteCounter+=1
 				rn.votedFor =rn.id
+				rn.currentTerm+=1
 				for hostId, client := range hostConnectionMap {
 					go func(hostId int32, client raft.RaftNodeClient) {
 						rva := &raft.RequestVoteArgs{
 							From: int32(nodeId),
 							To: hostId,
-							Term: rn.currentTerm+1,
+							Term: rn.currentTerm,
 							CandidateId: rn.id,
 							LastLogIndex: rn.commitIndex,
 							LastLogTerm: int32(len(rn.log)),
 						}
-						r, err := client.RequestVote(context.Background(), rva)
-						if err != nil {log.Print("err is not nil wor dllm")
+						ctx, cancel := context.WithTimeout(context.Background(),time.Millisecond*100)
+						defer cancel()
+						r, err := client.RequestVote(ctx, rva)
+						if err != nil {
+							log.Print("err is not nil wor dllm " , err)
+							//if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
+							//	log.Print("deadline lolllll")
+							//	rn.resetElectionTimer()
+							//}
 						} else {
 							if r.VoteGranted ==true{
 								//log.Printf("node %d got vote from %d", rn.id, hostId)
 								rn.voteCounter+=1
 								//log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
-								if rn.voteCounter>2{
+								if rn.voteCounter>2 && rn.serverState != raft.Role_Leader{
 									rn.serverState = raft.Role_Leader
 									log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
-									rn.currentTerm +=1
 									rn.currentLearder =rn.id
 									//set heartbeat to reset everyone
-									if !rn.heartBeatTimer.Stop() {
-										<-rn.heartBeatTimer.C
-									}
-									rn.heartBeatTimer.Reset(time.Nanosecond)
-									rn.resetHeartBeatTimer()
+									rn.resetHeartBeatTimer(0)
 								}
 							}
 						}
 					}(hostId,client)
+
 				}
 			}
 			case t:=<-rn.heartBeatTimer.C:{
-				log.Printf("HeartBeat triggered by node %d, t = %s",rn.id, t)
 				if rn.serverState==raft.Role_Follower{
 					break
 				}
+				rn.resetHeartBeatTimer(rn.heartBeatInterval)
+				rn.resetElectionTimer()
+				log.Printf("HeartBeat triggered by node %d, t = %s",rn.id, t)
 				for hostId, client := range hostConnectionMap {
 					go func(hostId int32, client raft.RaftNodeClient) {
 						args := &raft.AppendEntriesArgs{
@@ -224,7 +234,7 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 		}
 	}()
 
-	log.Printf("NewRaftNode %d returned" , rn.id)
+	//log.Printf("NewRaftNode %d returned" , rn.id)
 	return &rn, nil
 }
 
@@ -307,7 +317,16 @@ func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs)
 		reply.Term = args.Term
 		reply.To = args.From
 		reply.From = rn.id
-	} else {
+	} else if rn.currentTerm<args.Term{
+		rn.currentLearder = args.GetCandidateId()
+		rn.serverState = raft.Role_Follower
+		rn.votedFor = args.GetCandidateId()
+		rn.currentTerm = args.GetTerm()
+		reply.VoteGranted = true
+		reply.Term = args.Term
+		reply.To = args.From
+		reply.From = rn.id
+	} else{
 		reply.VoteGranted = false
 		reply.From = rn.id
 		reply.Term = rn.currentTerm
@@ -372,7 +391,7 @@ func (rn *raftNode) SetHeartBeatInterval(ctx context.Context, args *raft.SetHear
 	// TODO: Implement this!
 	var reply raft.SetHeartBeatIntervalReply
 	rn.heartBeatInterval = args.GetInterval()
-	rn.resetHeartBeatTimer()
+	rn.resetHeartBeatTimer(rn.heartBeatInterval)
 	return &reply, nil
 }
 
@@ -385,16 +404,27 @@ func (rn *raftNode) CheckEvents(context.Context, *raft.CheckEventsArgs) (*raft.C
 
 func (rn *raftNode) resetElectionTimer() () {
 	if !rn.electionTimer.Stop() {
-		<-rn.electionTimer.C
+		select{
+		case <-rn.electionTimer.C:
+			log.Print("drained")
+		default:
+			log.Print("drained default")
+		}
 	}
-	//log.Print("rn.electionTimeout = ", rn.electionTimeout)
+	//rn.electionTimer.Stop()
 	rn.electionTimer.Reset(time.Duration(rn.electionTimeout)*time.Millisecond)
 }
 
-func (rn *raftNode) resetHeartBeatTimer() {
+func (rn *raftNode) resetHeartBeatTimer(d int32) {
 	if !rn.heartBeatTimer.Stop() {
-		<-rn.heartBeatTimer.C
+		select{
+		case <-rn.heartBeatTimer.C:
+			log.Print("drained")
+		default:
+			log.Print("drained default")
+		}
 	}
-	rn.heartBeatTimer.Reset(time.Duration(rn.heartBeatInterval)*time.Millisecond)
-	log.Print("heart channel getvalue = ", <-rn.heartBeatTimer.C)
+	//rn.heartBeatTimer.Stop()
+	rn.heartBeatTimer.Reset(time.Duration(d)*time.Millisecond)
+	//log.Print("heart channel getvalue = ", <-rn.heartBeatTimer.C)
 }
