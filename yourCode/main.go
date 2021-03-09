@@ -150,7 +150,6 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 
 	//TODO: kick off leader election here !
 
-	//time.Sleep(time.Duration(electionTimeout))
 
 	go func() {
 		for {
@@ -162,7 +161,8 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 				rn.resetElectionTimer()
 				log.Printf("ElectTimer triggered node %d timeout = %d, t = %s",rn.id, rn.electionTimeout, t)
 				rn.serverState = raft.Role_Candidate
-				rn.voteCounter+=1
+				rn.voteCounter =1
+				//rn.voteCounter+=1
 				rn.votedFor =rn.id
 				rn.currentTerm+=1
 				for hostId, client := range hostConnectionMap {
@@ -179,10 +179,10 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						defer cancel()
 						r, err := client.RequestVote(ctx, rva)
 						if err != nil {
-							log.Print("err is not nil wor dllm " , err)
+							//log.Print("err is not nil wor dllm " , err)
 							//if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
-							//	log.Print("deadline lolllll")
-							//	rn.resetElectionTimer()
+							//	log.Printf("node %d: deadline passed", rn.id)
+							//
 							//}
 						} else {
 							if r.VoteGranted ==true{
@@ -203,12 +203,12 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 				}
 			}
 			case t:=<-rn.heartBeatTimer.C:{
-				if rn.serverState==raft.Role_Follower{
+				if rn.serverState !=raft.Role_Leader{
 					break
 				}
 				rn.resetHeartBeatTimer(rn.heartBeatInterval)
 				rn.resetElectionTimer()
-				log.Printf("HeartBeat triggered by node %d, t = %s",rn.id, t)
+				log.Printf("HeartBeat triggered by node %d, t = %s, state = %s",rn.id, t, rn.serverState)
 				for hostId, client := range hostConnectionMap {
 					go func(hostId int32, client raft.RaftNodeClient) {
 						args := &raft.AppendEntriesArgs{
@@ -221,10 +221,13 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 							Entries:      nil,
 							LeaderCommit: 0,
 						}
-						r, err := client.AppendEntries(context.Background(), args)
-						if err != nil {log.Print("err is not nil wor dllm")
+						ctx, cancel := context.WithTimeout(context.Background(),time.Millisecond*100)
+						defer cancel()
+						_, err := client.AppendEntries(ctx, args)
+						if err != nil {
+							log.Print("err is not nil wor dllm")
 						}else {
-							log.Printf("node %d : I got learder heartbeat", r.GetFrom())
+							//log.Printf("node %d : I got learder heartbeat", r.GetFrom())
 						}
 					}(hostId,client)
 				}
@@ -305,19 +308,22 @@ func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raf
 // reply: the RequestVote Reply Message
 func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs) (*raft.RequestVoteReply, error) {
 	//log.Printf("Node %d got vote request from %d", rn.id,args.GetFrom())
+	rn.resetElectionTimer()
 	// TODO: Implement this!
-
 	var reply raft.RequestVoteReply
-	if rn.currentLearder ==-1 {
-		rn.currentLearder = args.GetCandidateId()
-		rn.serverState = raft.Role_Follower
-		rn.votedFor = args.GetCandidateId()
-		rn.currentTerm = args.GetTerm()
-		reply.VoteGranted = true
-		reply.Term = args.Term
-		reply.To = args.From
-		reply.From = rn.id
-	} else if rn.currentTerm<args.Term{
+	//if rn.currentTerm ==args.GetTerm() {
+	//	if rn.votedFor ==0 || rn.currentLearder == args.GetCandidateId(){
+	//		rn.currentLearder = args.GetCandidateId()
+	//		rn.serverState = raft.Role_Follower
+	//		rn.votedFor = args.GetCandidateId()
+	//		rn.currentTerm = args.GetTerm()
+	//		reply.VoteGranted = true
+	//		reply.Term = args.Term
+	//		reply.To = args.From
+	//		reply.From = rn.id
+	//	} else {reply.VoteGranted=false}
+	//} else
+	if rn.currentTerm<args.GetTerm(){
 		rn.currentLearder = args.GetCandidateId()
 		rn.serverState = raft.Role_Follower
 		rn.votedFor = args.GetCandidateId()
@@ -348,16 +354,28 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 	// TODO: Implement this
 	var reply raft.AppendEntriesReply
 	rn.resetElectionTimer()
+	rn.serverState = raft.Role_Follower
 	if args.GetFrom() == rn.currentLearder{
 		if args.Term<rn.currentTerm{
 			reply.Success = false
 		}else {
+			rn.currentTerm = args.GetTerm()
 			reply.Success = true
 			reply.From = rn.id
 			reply.To = args.GetFrom()
 			reply.Term = args.GetTerm()
 			reply.MatchIndex = args.GetLeaderCommit()
 		}
+	}else if args.GetTerm()>=rn.currentLearder{
+		rn.currentLearder = args.GetFrom()
+		rn.currentTerm = args.GetTerm()
+		reply.Success = true
+		reply.From = rn.id
+		reply.To = args.GetFrom()
+		reply.Term = args.GetTerm()
+		reply.MatchIndex = args.GetLeaderCommit()
+	}else {
+		reply.Success=false
 	}
 	return &reply, nil
 }
@@ -406,9 +424,9 @@ func (rn *raftNode) resetElectionTimer() () {
 	if !rn.electionTimer.Stop() {
 		select{
 		case <-rn.electionTimer.C:
-			log.Print("drained")
+			//log.Print("drained")
 		default:
-			log.Print("drained default")
+			//log.Print("drained default")
 		}
 	}
 	//rn.electionTimer.Stop()
@@ -419,9 +437,9 @@ func (rn *raftNode) resetHeartBeatTimer(d int32) {
 	if !rn.heartBeatTimer.Stop() {
 		select{
 		case <-rn.heartBeatTimer.C:
-			log.Print("drained")
+			//log.Print("drained")
 		default:
-			log.Print("drained default")
+			//log.Print("drained default")
 		}
 	}
 	//rn.heartBeatTimer.Stop()
