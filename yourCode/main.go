@@ -308,6 +308,7 @@ func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raf
 // reply: the RequestVote Reply Message
 func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs) (*raft.RequestVoteReply, error) {
 	//log.Printf("Node %d got vote request from %d", rn.id,args.GetFrom())
+	//mile stone!!! passed all 6/10
 	rn.resetElectionTimer()
 	// TODO: Implement this!
 	var reply raft.RequestVoteReply
