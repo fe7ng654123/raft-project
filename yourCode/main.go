@@ -60,8 +60,8 @@ type raftNode struct {
 								// (initialized to leader last log index + 1)
 	matchIndex map[int32]int32 //for each server, index of highest log entry known to be replicated on server
 								// (initialized to 0, increases monotonically)
-	currentLearder int32
-	electionTimeout int32 //in milliseconds
+	currentLeader     int32
+	electionTimeout   int32 //in milliseconds
 	heartBeatInterval int32 //in milliseconds
 	//electionChan chan int32
 	electionTimer *time.Timer
@@ -105,7 +105,7 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 		kvstore:           make(map[string]int32),
 		nextIndex:         nil,
 		matchIndex:        nil,
-		currentLearder:    -1,
+		currentLeader:     -1,
 		electionTimeout:   int32(electionTimeout),
 		heartBeatInterval: int32(heartBeatInterval),
 		//electionChan:      make(chan int32),
@@ -179,11 +179,10 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						defer cancel()
 						r, err := client.RequestVote(ctx, rva)
 						if err != nil {
-							log.Print("err is not nil wor dllm " , err)
-							if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
-								log.Printf("node %d: deadline passed", rn.id)
-
-							}
+							//log.Print("err is not nil wor dllm " , err)
+							//if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
+							//	log.Printf("node %d: deadline passed", rn.id)
+							//}
 						} else {
 							if r.VoteGranted ==true{
 								//log.Printf("node %d got vote from %d", rn.id, hostId)
@@ -195,18 +194,20 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 									log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
 									//TODO : is it good to init here?
 									rn.matchIndex, rn.nextIndex = rn.initIdxforLeader(hostConnectionMap)
-									rn.currentLearder =rn.id
-									//set heartbeat to reset everyone
+									rn.currentLeader =rn.id
+
+									// revert candidate to follower
+									//if rn.voteCounter<3{
+									//	rn.serverState = raft.Role_Follower
+									//	log.Printf("candidate %d revert to follower", rn.id)
+									//}
 								}
 							}
 						}
 					}(hostId,client)
 
 				}
-				if rn.voteCounter<3{
-					rn.serverState = raft.Role_Follower
-					log.Printf("candidate %d revert to follower", rn.id)
-				}
+
 			}
 			case t:=<-rn.heartBeatTimer.C:{
 				if rn.serverState !=raft.Role_Leader{
@@ -262,7 +263,11 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 										rn.commitIndex = tempCommitIndex
 										log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
 										for _,v := range args.GetEntries(){
-											rn.kvstore[v.GetKey()]=v.GetValue()
+											if v.GetOp()==raft.Operation_Put{
+												rn.kvstore[v.GetKey()]=v.GetValue()	
+											} else if v.GetOp()==raft.Operation_Delete {
+												delete(rn.kvstore,v.GetKey())
+											}
 											log.Print("kvstore updated = ", rn.kvstore)
 										}
 									}
@@ -296,14 +301,13 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 // args: the operation to propose
 // reply: as specified in Desc
 func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.ProposeReply, error) {
-	log.Printf("I am raftNode %d I am in Propose()" , rn.id)
+	//log.Printf("I am raftNode %d I am in Propose()" , rn.id)
 	// TODO: Implement this!
-	//log.Printf("Receive propose from client")
 	
 	var ret raft.ProposeReply
 	if rn.serverState != raft.Role_Leader{
 		ret.Status=raft.Status_WrongNode
-		ret.CurrentLeader= rn.currentLearder
+		ret.CurrentLeader= rn.currentLeader
 	} else {
 		logEntry := &raft.LogEntry{
 			Term:  rn.currentTerm,
@@ -313,12 +317,13 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 		}
 		log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
 		rn.log = append(rn.log, logEntry)
-		log.Print("appended log = ", rn.log)
-		//rn.commitIndex=1
+		log.Print("appended log = ", rn.log, time.Now())
+		//for testing
+		//rn.kvstore[args.GetKey()]=args.GetV()
 		ret.Status = raft.Status_OK
 		ret.CurrentLeader = rn.id
+		rn.resetHeartBeatTimer(0)
 	}
-
 	return &ret, nil
 }
 
@@ -330,15 +335,14 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 // args: the key to check
 // reply: the value and status for this lookup of the given key
 func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raft.GetValueReply, error) {
-	log.Printf("I am raftNode %d I am in GetValue()", rn.id)
+	log.Printf("I am raftNode %d I am in GetValue(), my kvstore = %s, time =%s", rn.id, rn.kvstore, time.Now())
 	// TODO: Implement this!
 	var ret raft.GetValueReply
 	if val, ok := rn.kvstore[args.GetKey()]; ok {
-		//do something here
 		ret.V = val
 		ret.Status = raft.Status_KeyFound
 	}else{
-		log.Print("rn.GetValue() failed")
+		log.Print(rn.id,": rn.GetValue() failed")
 		ret.Status = raft.Status_KeyNotFound
 	}
 	return &ret, nil
@@ -364,13 +368,13 @@ func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs)
 			reply.To = args.From
 			reply.From = rn.id
 		} else {
-			log.Printf("node %d : same term but i already voted for %d , my currentleader = %d",rn.id,rn.votedFor,rn.currentLearder)
+			log.Printf("node %d : same term but i already voted for %d , my currentleader = %d",rn.id,rn.votedFor,rn.currentLeader)
 			reply.Term = args.Term
 			reply.To = args.From
 			reply.From = rn.id
 		}
 	} else if rn.currentTerm<args.GetTerm(){
-		//rn.currentLearder = args.GetCandidateId()
+		//rn.currentLeader = args.GetCandidateId()
 		rn.serverState = raft.Role_Follower
 		rn.votedFor = args.GetCandidateId()
 		rn.currentTerm = args.GetTerm()
@@ -407,9 +411,9 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 		reply.To = args.GetFrom()
 		reply.Term = args.GetTerm()
 	}else if args.GetTerm()>=rn.currentTerm{
-		rn.currentLearder= args.GetFrom()
-		if args.GetFrom()!=rn.currentLearder{
-			rn.currentLearder=args.GetFrom()
+		rn.currentLeader = args.GetFrom()
+		if args.GetFrom()!=rn.currentLeader {
+			rn.currentLeader =args.GetFrom()
 		}
 		rn.currentTerm = args.GetTerm()
 		if rn.commitIndex < args.GetLeaderCommit(){
