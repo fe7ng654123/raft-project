@@ -97,12 +97,12 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 
 	rn := raftNode{
 		id:                int32(nodeId),
-		log:               nil,
+		log:               []*raft.LogEntry{},
 		currentTerm:       0,
 		votedFor:          -1,
 		serverState:       raft.Role_Follower,
 		commitIndex:       0,
-		kvstore:           nil,
+		kvstore:           make(map[string]int32),
 		nextIndex:         nil,
 		matchIndex:        nil,
 		currentLearder:    -1,
@@ -175,32 +175,37 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 							LastLogIndex: rn.commitIndex,
 							LastLogTerm: int32(len(rn.log)),
 						}
-						ctx, cancel := context.WithTimeout(context.Background(),time.Millisecond*100)
+						ctx, cancel := context.WithTimeout(context.Background(),100* time.Millisecond)
 						defer cancel()
 						r, err := client.RequestVote(ctx, rva)
 						if err != nil {
-							//log.Print("err is not nil wor dllm " , err)
-							//if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
-							//	log.Printf("node %d: deadline passed", rn.id)
-							//
-							//}
+							log.Print("err is not nil wor dllm " , err)
+							if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
+								log.Printf("node %d: deadline passed", rn.id)
+
+							}
 						} else {
 							if r.VoteGranted ==true{
 								//log.Printf("node %d got vote from %d", rn.id, hostId)
 								rn.voteCounter+=1
 								//log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
 								if rn.voteCounter>2 && rn.serverState != raft.Role_Leader{
+									rn.resetHeartBeatTimer(0)
 									rn.serverState = raft.Role_Leader
 									log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
+									//TODO : is it good to init here?
+									rn.matchIndex, rn.nextIndex = rn.initIdxforLeader(hostConnectionMap)
 									rn.currentLearder =rn.id
 									//set heartbeat to reset everyone
-									rn.resetHeartBeatTimer(0)
 								}
 							}
 						}
 					}(hostId,client)
 
 				}
+				//if rn.voteCounter<3{
+				//	rn.serverState = raft.Role_Follower
+				//}
 			}
 			case t:=<-rn.heartBeatTimer.C:{
 				if rn.serverState !=raft.Role_Leader{
@@ -208,6 +213,8 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 				}
 				rn.resetHeartBeatTimer(rn.heartBeatInterval)
 				rn.resetElectionTimer()
+				tempCommitIndex :=int32(len(rn.log))
+				tempCounter:=1
 				log.Printf("HeartBeat triggered by node %d, t = %s, state = %s",rn.id, t, rn.serverState)
 				for hostId, client := range hostConnectionMap {
 					go func(hostId int32, client raft.RaftNodeClient) {
@@ -216,17 +223,50 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 							To:           hostId,
 							Term:         rn.currentTerm,
 							LeaderId:     rn.id,
-							PrevLogIndex: rn.commitIndex,
-							PrevLogTerm:  0,
 							Entries:      nil,
-							LeaderCommit: 0,
+							LeaderCommit: rn.commitIndex,
 						}
-						ctx, cancel := context.WithTimeout(context.Background(),time.Millisecond*100)
+						if len(rn.log)==0 {
+							args.PrevLogTerm=0
+							args.PrevLogIndex=0
+						}else if int32(len(rn.log))>=rn.nextIndex[hostId]{
+							if rn.matchIndex[hostId] != 0{
+								args.PrevLogTerm = rn.log[rn.matchIndex[hostId]].GetTerm()
+							}
+							args.PrevLogIndex = rn.matchIndex[hostId]
+							args.Entries = rn.log[(rn.nextIndex[hostId]-1):]
+							//log.Print("args.Entries ======================", args.Entries)
+						}else if int32(len(rn.log))<rn.nextIndex[hostId]{
+							if rn.matchIndex[hostId] != 0{
+								args.PrevLogTerm = rn.log[rn.matchIndex[hostId]-1].GetTerm()
+							}
+							args.PrevLogIndex = rn.matchIndex[hostId]
+						}
+
+						ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
 						defer cancel()
-						_, err := client.AppendEntries(ctx, args)
+						r, err := client.AppendEntries(ctx, args)
 						if err != nil {
 							log.Print("err is not nil wor dllm")
 						}else {
+							//rn.matchIndex[hostId] =r.GetMatchIndex()
+							//rn.nextIndex[hostId] = r.GetMatchIndex()+1
+							//TODO:  Check log replicated in Majority and update Committed index
+							if r.GetSuccess(){
+								rn.matchIndex[hostId] =r.GetMatchIndex()
+								rn.nextIndex[hostId] = r.GetMatchIndex()+1
+								if r.GetMatchIndex() == tempCommitIndex{
+									tempCounter++
+									if tempCounter >2 && r.GetMatchIndex() !=0{
+										rn.commitIndex = tempCommitIndex
+										log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
+										for _,v := range args.GetEntries(){
+											rn.kvstore[v.GetKey()]=v.GetValue()
+											log.Print("kvstore updated = ", rn.kvstore)
+										}
+									}
+								}
+							}
 							//log.Printf("node %d : I got learder heartbeat", r.GetFrom())
 						}
 					}(hostId,client)
@@ -257,20 +297,23 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.ProposeReply, error) {
 	log.Printf("I am raftNode %d I am in Propose()" , rn.id)
 	// TODO: Implement this!
-	log.Printf("Receive propose from client")
+	//log.Printf("Receive propose from client")
 	
 	var ret raft.ProposeReply
 	if rn.serverState != raft.Role_Leader{
 		ret.Status=raft.Status_WrongNode
 		ret.CurrentLeader= rn.currentLearder
 	} else {
-		log := &raft.LogEntry{
+		logEntry := &raft.LogEntry{
 			Term:  rn.currentTerm,
 			Op:    args.GetOp(),
 			Key:   args.GetKey(),
 			Value: args.GetV(),
 		}
-		rn.log = append(rn.log, log)
+		log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
+		rn.log = append(rn.log, logEntry)
+		log.Print("appended log = ", rn.log)
+		//rn.commitIndex=1
 		ret.Status = raft.Status_OK
 		ret.CurrentLeader = rn.id
 	}
@@ -292,9 +335,10 @@ func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raf
 	if val, ok := rn.kvstore[args.GetKey()]; ok {
 		//do something here
 		ret.V = val
-		ret.Status = raft.Status_OK
+		ret.Status = raft.Status_KeyFound
 	}else{
 		log.Print("rn.GetValue() failed")
+		ret.Status = raft.Status_KeyNotFound
 	}
 	return &ret, nil
 }
@@ -308,23 +352,18 @@ func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raf
 // reply: the RequestVote Reply Message
 func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs) (*raft.RequestVoteReply, error) {
 	//log.Printf("Node %d got vote request from %d", rn.id,args.GetFrom())
-	//mile stone!!! passed all 6/10
 	rn.resetElectionTimer()
 	// TODO: Implement this!
 	var reply raft.RequestVoteReply
-	//if rn.currentTerm ==args.GetTerm() {
-	//	if rn.votedFor ==0 || rn.currentLearder == args.GetCandidateId(){
-	//		rn.currentLearder = args.GetCandidateId()
-	//		rn.serverState = raft.Role_Follower
-	//		rn.votedFor = args.GetCandidateId()
-	//		rn.currentTerm = args.GetTerm()
-	//		reply.VoteGranted = true
-	//		reply.Term = args.Term
-	//		reply.To = args.From
-	//		reply.From = rn.id
-	//	} else {reply.VoteGranted=false}
-	//} else
-	if rn.currentTerm<args.GetTerm(){
+	if rn.currentTerm ==args.GetTerm() {
+		if rn.currentLearder == args.GetCandidateId(){
+			rn.serverState = raft.Role_Follower
+			reply.VoteGranted = true
+			reply.Term = args.Term
+			reply.To = args.From
+			reply.From = rn.id
+		} else {log.Print("same term but different leader?WTF my leader = ",rn.currentLearder)}
+	} else if rn.currentTerm<args.GetTerm(){
 		rn.currentLearder = args.GetCandidateId()
 		rn.serverState = raft.Role_Follower
 		rn.votedFor = args.GetCandidateId()
@@ -351,33 +390,39 @@ func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs)
 // reply: the AppendEntries Reply Message
 func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesArgs) (*raft.AppendEntriesReply, error) {
 	//log.Printf("I am raftNode %d I am in AppendEntries()", rn.id)
-
-	// TODO: Implement this
+	// TODO: Implement this ; heartbeat can be identified using the 0 length log entry
 	var reply raft.AppendEntriesReply
 	rn.resetElectionTimer()
 	rn.serverState = raft.Role_Follower
-	if args.GetFrom() == rn.currentLearder{
-		if args.Term<rn.currentTerm{
-			reply.Success = false
-		}else {
-			rn.currentTerm = args.GetTerm()
-			reply.Success = true
-			reply.From = rn.id
-			reply.To = args.GetFrom()
-			reply.Term = args.GetTerm()
-			reply.MatchIndex = args.GetLeaderCommit()
+
+	if args.GetTerm()<rn.currentTerm{
+		reply.Success = false
+	}else if args.GetTerm()>=rn.currentTerm{
+		if args.GetFrom()!=rn.currentLearder{
+			rn.currentLearder=args.GetFrom()
 		}
-	}else if args.GetTerm()>=rn.currentLearder{
-		rn.currentLearder = args.GetFrom()
 		rn.currentTerm = args.GetTerm()
+		if rn.commitIndex < args.GetLeaderCommit(){
+			for _,v := range rn.log{
+				rn.kvstore[v.GetKey()]= v.GetValue()
+			}
+			rn.commitIndex = args.GetLeaderCommit()
+		}
+		if int32(len(rn.log)) == args.GetPrevLogIndex() {
+			//&& int32(len(rn.log)) == args.GetPrevLogTerm()
+			log.Print("PrevLogIndex matched")
+		} else {print("!PrevLogIndex NOT matched")}
+		rn.log = append(rn.log,args.GetEntries()...)
+		//log.Printf("node %d's apppened log = %s",rn.id, rn.log)
+		//log.Print("learder's PrevLogIndex = ",args.PrevLogIndex)
 		reply.Success = true
 		reply.From = rn.id
 		reply.To = args.GetFrom()
 		reply.Term = args.GetTerm()
-		reply.MatchIndex = args.GetLeaderCommit()
-	}else {
-		reply.Success=false
+		reply.MatchIndex = args.GetPrevLogIndex() +int32(len(args.GetEntries()))
+
 	}
+
 	return &reply, nil
 }
 
@@ -405,7 +450,7 @@ func (rn *raftNode) SetElectionTimeout(ctx context.Context, args *raft.SetElecti
 // args: the heartbeat duration
 // reply: no use
 func (rn *raftNode) SetHeartBeatInterval(ctx context.Context, args *raft.SetHeartBeatIntervalArgs) (*raft.SetHeartBeatIntervalReply, error) {
-	log.Printf("I am raftNode %d I am in SetHeartBeatInterval()", rn.id)
+	log.Printf("I am raftNode %d I am in SetHeartBeatInterval(), with heartbeat = %d", rn.id, args.GetInterval())
 
 	// TODO: Implement this!
 	var reply raft.SetHeartBeatIntervalReply
@@ -438,12 +483,27 @@ func (rn *raftNode) resetHeartBeatTimer(d int32) {
 	if !rn.heartBeatTimer.Stop() {
 		select{
 		case <-rn.heartBeatTimer.C:
-			//log.Print("drained")
+			log.Print("drained")
 		default:
-			//log.Print("drained default")
+			log.Print("drained default")
 		}
 	}
 	//rn.heartBeatTimer.Stop()
 	rn.heartBeatTimer.Reset(time.Duration(d)*time.Millisecond)
 	//log.Print("heart channel getvalue = ", <-rn.heartBeatTimer.C)
+}
+
+func (rn *raftNode) initIdxforLeader( hostmap map[int32]raft.RaftNodeClient) (map[int32]int32, map[int32]int32) {
+	matchIdex := make(map[int32]int32)
+	for hostID, _ := range hostmap{
+		matchIdex[hostID]=0
+		log.Print("in initIdxforLeader adding hostID = ", hostID)
+	}
+
+	nextIdex := make(map[int32]int32)
+	for hostID, _ := range hostmap{
+		nextIdex[hostID]= int32(len(rn.log)+1)
+		log.Print("in initIdxforLeader adding nextIdex = ", len(rn.log)+1)
+	}
+	return matchIdex,nextIdex
 }
