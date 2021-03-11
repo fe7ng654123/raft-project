@@ -203,9 +203,10 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 					}(hostId,client)
 
 				}
-				//if rn.voteCounter<3{
-				//	rn.serverState = raft.Role_Follower
-				//}
+				if rn.voteCounter<3{
+					rn.serverState = raft.Role_Follower
+					log.Printf("candidate %d revert to follower", rn.id)
+				}
 			}
 			case t:=<-rn.heartBeatTimer.C:{
 				if rn.serverState !=raft.Role_Leader{
@@ -356,15 +357,20 @@ func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs)
 	// TODO: Implement this!
 	var reply raft.RequestVoteReply
 	if rn.currentTerm ==args.GetTerm() {
-		if rn.currentLearder == args.GetCandidateId(){
+		if rn.votedFor == args.CandidateId || rn.votedFor == -1{
 			rn.serverState = raft.Role_Follower
 			reply.VoteGranted = true
 			reply.Term = args.Term
 			reply.To = args.From
 			reply.From = rn.id
-		} else {log.Print("same term but different leader?WTF my leader = ",rn.currentLearder)}
+		} else {
+			log.Printf("node %d : same term but i already voted for %d , my currentleader = %d",rn.id,rn.votedFor,rn.currentLearder)
+			reply.Term = args.Term
+			reply.To = args.From
+			reply.From = rn.id
+		}
 	} else if rn.currentTerm<args.GetTerm(){
-		rn.currentLearder = args.GetCandidateId()
+		//rn.currentLearder = args.GetCandidateId()
 		rn.serverState = raft.Role_Follower
 		rn.votedFor = args.GetCandidateId()
 		rn.currentTerm = args.GetTerm()
@@ -397,7 +403,11 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 
 	if args.GetTerm()<rn.currentTerm{
 		reply.Success = false
+		reply.From = rn.id
+		reply.To = args.GetFrom()
+		reply.Term = args.GetTerm()
 	}else if args.GetTerm()>=rn.currentTerm{
+		rn.currentLearder= args.GetFrom()
 		if args.GetFrom()!=rn.currentLearder{
 			rn.currentLearder=args.GetFrom()
 		}
@@ -483,9 +493,9 @@ func (rn *raftNode) resetHeartBeatTimer(d int32) {
 	if !rn.heartBeatTimer.Stop() {
 		select{
 		case <-rn.heartBeatTimer.C:
-			log.Print("drained")
+			//log.Print("drained")
 		default:
-			log.Print("drained default")
+			//log.Print("drained default")
 		}
 	}
 	//rn.heartBeatTimer.Stop()
@@ -497,13 +507,13 @@ func (rn *raftNode) initIdxforLeader( hostmap map[int32]raft.RaftNodeClient) (ma
 	matchIdex := make(map[int32]int32)
 	for hostID, _ := range hostmap{
 		matchIdex[hostID]=0
-		log.Print("in initIdxforLeader adding hostID = ", hostID)
+		//log.Print("in initIdxforLeader adding hostID = ", hostID)
 	}
 
 	nextIdex := make(map[int32]int32)
 	for hostID, _ := range hostmap{
 		nextIdex[hostID]= int32(len(rn.log)+1)
-		log.Print("in initIdxforLeader adding nextIdex = ", len(rn.log)+1)
+		//log.Print("in initIdxforLeader adding nextIdex = ", len(rn.log)+1)
 	}
 	return matchIdex,nextIdex
 }
