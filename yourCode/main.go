@@ -63,11 +63,9 @@ type raftNode struct {
 	currentLeader     int32
 	electionTimeout   int32 //in milliseconds
 	heartBeatInterval int32 //in milliseconds
-	//electionChan chan int32
 	electionTimer *time.Timer
 	heartBeatTimer *time.Timer
 	voteCounter int32
-
 }
 
 
@@ -89,7 +87,6 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 	// TODO: Implement this!
 
 	//remove myself in the hostmap
-	//log.Print(nodeidPortMap)
 	delete(nodeidPortMap, nodeId)
 
 	//a map for {node id, gRPCClient}
@@ -108,11 +105,9 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 		currentLeader:     -1,
 		electionTimeout:   int32(electionTimeout),
 		heartBeatInterval: int32(heartBeatInterval),
-		//electionChan:      make(chan int32),
 		electionTimer:	   time.NewTimer(time.Duration(electionTimeout) * time.Millisecond),
 		heartBeatTimer:	   time.NewTimer(time.Duration(heartBeatInterval) *time.Millisecond),
 	}
-	//log.Print("default heartbeat intervel = ", heartBeatInterval)
 
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", myport))
 
@@ -162,49 +157,39 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 				log.Printf("ElectTimer triggered node %d timeout = %d, t = %s",rn.id, rn.electionTimeout, t)
 				rn.serverState = raft.Role_Candidate
 				rn.voteCounter =1
-				//rn.voteCounter+=1
-				rn.votedFor =rn.id
-				rn.currentTerm+=1
+				rn.votedFor = rn.id
+				rn.currentTerm +=1
 				for hostId, client := range hostConnectionMap {
 					go func(hostId int32, client raft.RaftNodeClient) {
 						rva := &raft.RequestVoteArgs{
-							From: int32(nodeId),
+							From: rn.id,
 							To: hostId,
 							Term: rn.currentTerm,
 							CandidateId: rn.id,
-							LastLogIndex: rn.commitIndex,
-							LastLogTerm: int32(len(rn.log)),
+							LastLogIndex: int32(len(rn.log)),
+							LastLogTerm: 0,
+						}
+						if int32(len(rn.log))>0{
+							rva.LastLogTerm = rn.currentTerm-1
 						}
 						ctx, cancel := context.WithTimeout(context.Background(),100* time.Millisecond)
 						defer cancel()
 						r, err := client.RequestVote(ctx, rva)
-						go func() {
-							select {
-							case <-ctx.Done():
-								if err != nil {
-									log.Print("election <-ctx.Done(): ", err)
-									cancel()
-								}
-							}
-						}()
+						<-ctx.Done()
 						if err != nil {
-							//log.Print("err is not nil wor dllm " , err)
-							//if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
-							//	log.Printf("node %d: deadline passed", rn.id)
-							//}
-						} else {
+							log.Print("election <-ctx.Done(): ", err)
+							//cancel()
+						}else {
 							if r.VoteGranted ==true{
-								//log.Printf("node %d got vote from %d", rn.id, hostId)
 								rn.voteCounter+=1
 								//log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
 								if rn.voteCounter>2 && rn.serverState != raft.Role_Leader{
-									rn.resetHeartBeatTimer(0)
 									rn.serverState = raft.Role_Leader
+									rn.resetHeartBeatTimer(0)
 									log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
 									//TODO : is it good to init here?
 									rn.matchIndex, rn.nextIndex = rn.initIdxforLeader(hostConnectionMap)
-									rn.currentLeader =rn.id
-
+									rn.currentLeader=rn.id
 									// revert candidate to follower
 									//if rn.voteCounter<3{
 									//	rn.serverState = raft.Role_Follower
@@ -213,6 +198,8 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 								}
 							}
 						}
+
+
 					}(hostId,client)
 
 				}
@@ -237,6 +224,16 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 							Entries:      nil,
 							LeaderCommit: rn.commitIndex,
 						}
+						//args.PrevLogIndex=rn.matchIndex[hostId]
+						//if int32(len(rn.log))>0 && int32(len(rn.log))>=rn.nextIndex[hostId]{
+						//	if args.PrevLogIndex !=0{
+						//		args.PrevLogTerm = rn.log[rn.matchIndex[hostId]].GetTerm()
+						//	}
+						//	args.Entries = rn.log[(rn.nextIndex[hostId]-1):]
+						//} else if int32(len(rn.log))>0 && int32(len(rn.log))<rn.nextIndex[hostId]{
+						//	args.PrevLogTerm = rn.log[rn.matchIndex[hostId]-1].GetTerm()
+						//}
+
 						if len(rn.log)==0 {
 							args.PrevLogTerm=0
 							args.PrevLogIndex=0
@@ -253,38 +250,28 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 							}
 							args.PrevLogIndex = rn.matchIndex[hostId]
 						}
+
 						ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
 						defer cancel()
 						r, err := client.AppendEntries(ctx, args)
-						go func() {
-							select {
-							case <-ctx.Done():
-								if err != nil {
-									log.Print("Append <-ctx.Done(): ", err)
-									cancel()
-								}
-								//log.Print("let me resentAppend here")
-								//rn.resentAppend(client,args)
-							}
-						}()
+						<-ctx.Done()
 						if err != nil {
-							log.Print("err is not nil wor dllm")
-							//rn.resetHeartBeatTimer(0)
-						}else {
-							//rn.matchIndex[hostId] =r.GetMatchIndex()
-							//rn.nextIndex[hostId] = r.GetMatchIndex()+1
-							//TODO:  Check log replicated in Majority and update Committed index
+							log.Print("Append <-ctx.Done(): ", err)
+							//cancel()
+						} else {
 							if r.GetSuccess(){
-								rn.matchIndex[hostId] =r.GetMatchIndex()
+								rn.matchIndex[hostId] = r.GetMatchIndex()
 								rn.nextIndex[hostId] = r.GetMatchIndex()+1
+								//log.Print("ahhhhhhhhhhhhhhhh fkkkkkkkkkkkkk fkkkkkkkkkkkk")
 								if r.GetMatchIndex() == tempCommitIndex{
 									tempCounter++
+									//log.Print("tempCounter++", r.GetMatchIndex())
 									if tempCounter >2 && r.GetMatchIndex() !=0{
 										rn.commitIndex = tempCommitIndex
 										log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
 										for _,v := range args.GetEntries(){
 											if v.GetOp()==raft.Operation_Put{
-												rn.kvstore[v.GetKey()]=v.GetValue()	
+												rn.kvstore[v.GetKey()]=v.GetValue()
 											} else if v.GetOp()==raft.Operation_Delete {
 												delete(rn.kvstore,v.GetKey())
 											}
@@ -293,8 +280,8 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 									}
 								}
 							}
-							//log.Printf("node %d : I got learder heartbeat", r.GetFrom())
 						}
+
 					}(hostId,client)
 				}
 			}
@@ -302,8 +289,6 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 			}
 		}
 	}()
-
-	//log.Printf("NewRaftNode %d returned" , rn.id)
 	return &rn, nil
 }
 
@@ -342,6 +327,14 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 		//rn.kvstore[args.GetKey()]=args.GetV()
 		ret.Status = raft.Status_OK
 		ret.CurrentLeader = rn.id
+
+			//if args.GetOp()==raft.Operation_Put{
+			//	rn.kvstore[args.GetKey()]=args.GetV()
+			//} else if args.GetOp()==raft.Operation_Delete {
+			//	delete(rn.kvstore,args.GetKey())
+			//}
+			//log.Print("kvstore updated = ", rn.kvstore)
+
 		rn.resetHeartBeatTimer(0)
 	}
 	return &ret, nil
@@ -445,8 +438,16 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 		}
 		rn.currentTerm = args.GetTerm()
 		if rn.commitIndex < args.GetLeaderCommit(){
+			//for _,v := range rn.log{
+			//	rn.kvstore[v.GetKey()]= v.GetValue()
+			//}
 			for _,v := range rn.log{
-				rn.kvstore[v.GetKey()]= v.GetValue()
+				if v.GetOp()==raft.Operation_Put{
+					rn.kvstore[v.GetKey()]=v.GetValue()
+				} else if v.GetOp()==raft.Operation_Delete {
+					delete(rn.kvstore,v.GetKey())
+				}
+				log.Print("kvstore updated = ", rn.kvstore)
 			}
 			rn.commitIndex = args.GetLeaderCommit()
 		}
@@ -457,7 +458,7 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 			print("!PrevLogIndex NOT matched")
 		}
 		rn.log = append(rn.log,args.GetEntries()...)
-		//log.Printf("node %d's apppened log = %s",rn.id, rn.log)
+		log.Printf("node %d's apppened log = %s",rn.id, rn.log)
 		//log.Print("learder's PrevLogIndex = ",args.PrevLogIndex)
 		reply.Success = true
 		reply.From = rn.id
