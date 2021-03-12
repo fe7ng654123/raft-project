@@ -178,6 +178,15 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						ctx, cancel := context.WithTimeout(context.Background(),100* time.Millisecond)
 						defer cancel()
 						r, err := client.RequestVote(ctx, rva)
+						go func() {
+							select {
+							case <-ctx.Done():
+								if err != nil {
+									log.Print("election <-ctx.Done(): ", err)
+									cancel()
+								}
+							}
+						}()
 						if err != nil {
 							//log.Print("err is not nil wor dllm " , err)
 							//if err.Error() == "rpc error: code = DeadlineExceeded desc = context deadline exceeded"{
@@ -244,12 +253,23 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 							}
 							args.PrevLogIndex = rn.matchIndex[hostId]
 						}
-
 						ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
 						defer cancel()
 						r, err := client.AppendEntries(ctx, args)
+						go func() {
+							select {
+							case <-ctx.Done():
+								if err != nil {
+									log.Print("Append <-ctx.Done(): ", err)
+									cancel()
+								}
+								//log.Print("let me resentAppend here")
+								//rn.resentAppend(client,args)
+							}
+						}()
 						if err != nil {
 							log.Print("err is not nil wor dllm")
+							//rn.resetHeartBeatTimer(0)
 						}else {
 							//rn.matchIndex[hostId] =r.GetMatchIndex()
 							//rn.nextIndex[hostId] = r.GetMatchIndex()+1
@@ -357,6 +377,7 @@ func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raf
 // reply: the RequestVote Reply Message
 func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs) (*raft.RequestVoteReply, error) {
 	//log.Printf("Node %d got vote request from %d", rn.id,args.GetFrom())
+
 	rn.resetElectionTimer()
 	// TODO: Implement this!
 	var reply raft.RequestVoteReply
@@ -405,11 +426,18 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 	rn.resetElectionTimer()
 	rn.serverState = raft.Role_Follower
 
-	if args.GetTerm()<rn.currentTerm{
+	if args.GetTerm()<rn.currentTerm {
 		reply.Success = false
 		reply.From = rn.id
 		reply.To = args.GetFrom()
 		reply.Term = args.GetTerm()
+	//TODO: importatant!!!
+	//}else if int32(len(rn.log)) == args.GetPrevLogIndex() {
+	//		//&& int32(len(rn.log)) == args.GetPrevLogTerm()
+	//		log.Print("PrevLogIndex matched")
+	//	} else {
+	//		print("!PrevLogIndex NOT matched")
+	//	}
 	}else if args.GetTerm()>=rn.currentTerm{
 		rn.currentLeader = args.GetFrom()
 		if args.GetFrom()!=rn.currentLeader {
@@ -425,7 +453,9 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 		if int32(len(rn.log)) == args.GetPrevLogIndex() {
 			//&& int32(len(rn.log)) == args.GetPrevLogTerm()
 			log.Print("PrevLogIndex matched")
-		} else {print("!PrevLogIndex NOT matched")}
+		} else {
+			print("!PrevLogIndex NOT matched")
+		}
 		rn.log = append(rn.log,args.GetEntries()...)
 		//log.Printf("node %d's apppened log = %s",rn.id, rn.log)
 		//log.Print("learder's PrevLogIndex = ",args.PrevLogIndex)
@@ -510,7 +540,7 @@ func (rn *raftNode) resetHeartBeatTimer(d int32) {
 func (rn *raftNode) initIdxforLeader( hostmap map[int32]raft.RaftNodeClient) (map[int32]int32, map[int32]int32) {
 	matchIdex := make(map[int32]int32)
 	for hostID, _ := range hostmap{
-		matchIdex[hostID]=0
+		matchIdex[hostID]=int32(len(rn.log))
 		//log.Print("in initIdxforLeader adding hostID = ", hostID)
 	}
 
@@ -520,4 +550,21 @@ func (rn *raftNode) initIdxforLeader( hostmap map[int32]raft.RaftNodeClient) (ma
 		//log.Print("in initIdxforLeader adding nextIdex = ", len(rn.log)+1)
 	}
 	return matchIdex,nextIdex
+}
+
+func (rn *raftNode) resentAppend(client raft.RaftNodeClient,args *raft.AppendEntriesArgs) (r *raft.AppendEntriesReply,err error ){
+	ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
+	defer cancel()
+	r, err = client.AppendEntries(ctx, args)
+	go func() {
+		select {
+		case <-ctx.Done():
+			if err != nil {
+				fmt.Println("Append <-ctx.Done(): ", err)
+			}
+			log.Print("let me resentAppend here")
+			rn.resentAppend(client,args)
+		}
+	}()
+	return r, err
 }
