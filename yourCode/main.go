@@ -178,11 +178,10 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						<-ctx.Done()
 						if err != nil {
 							log.Print("election <-ctx.Done(): ", err)
-							//cancel()
 						}else {
 							if r.VoteGranted ==true{
 								rn.voteCounter+=1
-								//log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
+								log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
 								if rn.voteCounter>2 && rn.serverState != raft.Role_Leader{
 									rn.serverState = raft.Role_Leader
 									rn.resetHeartBeatTimer(0)
@@ -224,15 +223,6 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 							Entries:      nil,
 							LeaderCommit: rn.commitIndex,
 						}
-						//args.PrevLogIndex=rn.matchIndex[hostId]
-						//if int32(len(rn.log))>0 && int32(len(rn.log))>=rn.nextIndex[hostId]{
-						//	if args.PrevLogIndex !=0{
-						//		args.PrevLogTerm = rn.log[rn.matchIndex[hostId]].GetTerm()
-						//	}
-						//	args.Entries = rn.log[(rn.nextIndex[hostId]-1):]
-						//} else if int32(len(rn.log))>0 && int32(len(rn.log))<rn.nextIndex[hostId]{
-						//	args.PrevLogTerm = rn.log[rn.matchIndex[hostId]-1].GetTerm()
-						//}
 
 						if len(rn.log)==0 {
 							args.PrevLogTerm=0
@@ -257,15 +247,20 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						<-ctx.Done()
 						if err != nil {
 							log.Print("Append <-ctx.Done(): ", err)
-							//cancel()
+							rn.resetHeartBeatTimer(0)
+							//ctx2, cancel2 := context.WithTimeout(context.Background(),100*time.Millisecond)
+							//defer cancel2()
+							//client.AppendEntries(ctx2, args)
 						} else {
+							if r.GetSuccess() == false{
+								log.Print("false wor dllm!!!!, false node = ",r.GetFrom())
+							}
 							if r.GetSuccess(){
+								log.Print("node " ,r.GetFrom(), ": I report success with matchindex = ", r.GetMatchIndex())
 								rn.matchIndex[hostId] = r.GetMatchIndex()
 								rn.nextIndex[hostId] = r.GetMatchIndex()+1
-								//log.Print("ahhhhhhhhhhhhhhhh fkkkkkkkkkkkkk fkkkkkkkkkkkk")
 								if r.GetMatchIndex() == tempCommitIndex{
 									tempCounter++
-									//log.Print("tempCounter++", r.GetMatchIndex())
 									if tempCounter >2 && r.GetMatchIndex() !=0{
 										rn.commitIndex = tempCommitIndex
 										log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
@@ -322,6 +317,7 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 		}
 		log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
 		rn.log = append(rn.log, logEntry)
+		rn.resetHeartBeatTimer(0)
 		log.Print("appended log = ", rn.log, time.Now())
 		//for testing
 		//rn.kvstore[args.GetKey()]=args.GetV()
@@ -335,7 +331,6 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 			//}
 			//log.Print("kvstore updated = ", rn.kvstore)
 
-		rn.resetHeartBeatTimer(0)
 	}
 	return &ret, nil
 }
@@ -382,7 +377,7 @@ func (rn *raftNode) RequestVote(ctx context.Context, args *raft.RequestVoteArgs)
 			reply.To = args.From
 			reply.From = rn.id
 		} else {
-			log.Printf("node %d : same term but i already voted for %d , my currentleader = %d",rn.id,rn.votedFor,rn.currentLeader)
+			//log.Printf("node %d : same term but i already voted for %d , my currentleader = %d",rn.id,rn.votedFor,rn.currentLeader)
 			reply.Term = args.Term
 			reply.To = args.From
 			reply.From = rn.id
@@ -416,6 +411,8 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 	//log.Printf("I am raftNode %d I am in AppendEntries()", rn.id)
 	// TODO: Implement this ; heartbeat can be identified using the 0 length log entry
 	var reply raft.AppendEntriesReply
+
+	//ok for now
 	rn.resetElectionTimer()
 	rn.serverState = raft.Role_Follower
 
@@ -424,24 +421,33 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 		reply.From = rn.id
 		reply.To = args.GetFrom()
 		reply.Term = args.GetTerm()
-	//TODO: importatant!!!
-	//}else if int32(len(rn.log)) == args.GetPrevLogIndex() {
-	//		//&& int32(len(rn.log)) == args.GetPrevLogTerm()
-	//		log.Print("PrevLogIndex matched")
-	//	} else {
-	//		print("!PrevLogIndex NOT matched")
-	//	}
+	}else if int32(len(rn.log)) < args.GetPrevLogIndex() {
+		print("PrevLogIndex NOT matched")
+		reply.Success = false
+		reply.From = rn.id
+		reply.To = args.GetFrom()
+		reply.Term = args.GetTerm()
+		reply.MatchIndex = args.GetPrevLogIndex()
+	}else if args.GetPrevLogIndex()>0 && int32(len(rn.log)) >= args.GetPrevLogIndex() &&
+			rn.log[args.GetPrevLogIndex()-1].GetTerm() != args.GetPrevLogTerm() {
+		log.Print("PrevLogTerm NOT matched")
+		reply.Success = false
+		reply.From = rn.id
+		reply.To = args.GetFrom()
+		reply.Term = args.GetTerm()
+		reply.MatchIndex = args.GetPrevLogIndex()
+		rn.log = rn.log[0:args.GetPrevLogIndex()-1]
 	}else if args.GetTerm()>=rn.currentTerm{
 		rn.currentLeader = args.GetFrom()
-		if args.GetFrom()!=rn.currentLeader {
-			rn.currentLeader =args.GetFrom()
-		}
+		//if args.GetFrom()!=rn.currentLeader {
+		//	rn.currentLeader =args.GetFrom()
+		//}
 		rn.currentTerm = args.GetTerm()
 		if rn.commitIndex < args.GetLeaderCommit(){
 			//for _,v := range rn.log{
 			//	rn.kvstore[v.GetKey()]= v.GetValue()
 			//}
-			for _,v := range rn.log{
+			for _,v := range rn.log[rn.commitIndex:args.GetLeaderCommit()]{
 				if v.GetOp()==raft.Operation_Put{
 					rn.kvstore[v.GetKey()]=v.GetValue()
 				} else if v.GetOp()==raft.Operation_Delete {
@@ -451,12 +457,6 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 			}
 			rn.commitIndex = args.GetLeaderCommit()
 		}
-		if int32(len(rn.log)) == args.GetPrevLogIndex() {
-			//&& int32(len(rn.log)) == args.GetPrevLogTerm()
-			log.Print("PrevLogIndex matched")
-		} else {
-			print("!PrevLogIndex NOT matched")
-		}
 		rn.log = append(rn.log,args.GetEntries()...)
 		log.Printf("node %d's apppened log = %s",rn.id, rn.log)
 		//log.Print("learder's PrevLogIndex = ",args.PrevLogIndex)
@@ -465,7 +465,6 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 		reply.To = args.GetFrom()
 		reply.Term = args.GetTerm()
 		reply.MatchIndex = args.GetPrevLogIndex() +int32(len(args.GetEntries()))
-
 	}
 
 	return &reply, nil
@@ -553,19 +552,19 @@ func (rn *raftNode) initIdxforLeader( hostmap map[int32]raft.RaftNodeClient) (ma
 	return matchIdex,nextIdex
 }
 
-func (rn *raftNode) resentAppend(client raft.RaftNodeClient,args *raft.AppendEntriesArgs) (r *raft.AppendEntriesReply,err error ){
-	ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
-	defer cancel()
-	r, err = client.AppendEntries(ctx, args)
-	go func() {
-		select {
-		case <-ctx.Done():
-			if err != nil {
-				fmt.Println("Append <-ctx.Done(): ", err)
-			}
-			log.Print("let me resentAppend here")
-			rn.resentAppend(client,args)
-		}
-	}()
-	return r, err
-}
+//func (rn *raftNode) resentAppend(client raft.RaftNodeClient,args *raft.AppendEntriesArgs) (r *raft.AppendEntriesReply,err error ){
+//	ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
+//	defer cancel()
+//	r, err = client.AppendEntries(ctx, args)
+//	go func() {
+//		select {
+//		case <-ctx.Done():
+//			if err != nil {
+//				fmt.Println("Append <-ctx.Done(): ", err)
+//			}
+//			log.Print("let me resentAppend here")
+//			rn.resentAppend(client,args)
+//		}
+//	}()
+//	return r, err
+//}
