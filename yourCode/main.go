@@ -175,7 +175,7 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						ctx, cancel := context.WithTimeout(context.Background(),100* time.Millisecond)
 						defer cancel()
 						r, err := client.RequestVote(ctx, rva)
-						<-ctx.Done()
+// 						<-ctx.Done()
 						if err != nil {
 							//log.Print("election <-ctx.Done(): ", err)
 						}else {
@@ -243,7 +243,7 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
 						defer cancel()
 						r, err := client.AppendEntries(ctx, args)
-						<-ctx.Done()
+// 						<-ctx.Done()
 						if err != nil {
 							//log.Print("Append <-ctx.Done(): ", err)
 							//rn.resetHeartBeatTimer(0)
