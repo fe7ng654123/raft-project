@@ -149,12 +149,12 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 	go func() {
 		for {
 			select {
-			case t:= <-rn.electionTimer.C:{
+			case <-rn.electionTimer.C:{
 				if rn.serverState == raft.Role_Leader{
 					break
 				}
 				rn.resetElectionTimer()
-				log.Printf("ElectTimer triggered node %d timeout = %d, t = %s",rn.id, rn.electionTimeout, t)
+				//log.Printf("ElectTimer triggered node %d timeout = %d, t = %s",rn.id, rn.electionTimeout, t)
 				rn.serverState = raft.Role_Candidate
 				rn.voteCounter =1
 				rn.votedFor = rn.id
@@ -177,16 +177,15 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						r, err := client.RequestVote(ctx, rva)
 						<-ctx.Done()
 						if err != nil {
-							log.Print("election <-ctx.Done(): ", err)
+							//log.Print("election <-ctx.Done(): ", err)
 						}else {
 							if r.VoteGranted ==true{
 								rn.voteCounter+=1
-								log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
+								//log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
 								if rn.voteCounter>2 && rn.serverState != raft.Role_Leader{
 									rn.serverState = raft.Role_Leader
 									rn.resetHeartBeatTimer(0)
-									log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
-									//TODO : is it good to init here?
+									//log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
 									rn.matchIndex, rn.nextIndex = rn.initIdxforLeader(hostConnectionMap)
 									rn.currentLeader=rn.id
 									// revert candidate to follower
@@ -204,7 +203,7 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 				}
 
 			}
-			case t:=<-rn.heartBeatTimer.C:{
+			case <-rn.heartBeatTimer.C:{
 				if rn.serverState !=raft.Role_Leader{
 					break
 				}
@@ -212,7 +211,7 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 				rn.resetElectionTimer()
 				tempCommitIndex :=int32(len(rn.log))
 				tempCounter:=1
-				log.Printf("HeartBeat triggered by node %d, t = %s, state = %s",rn.id, t, rn.serverState)
+				//log.Printf("HeartBeat triggered by node %d, t = %s, state = %s",rn.id, t, rn.serverState)
 				for hostId, client := range hostConnectionMap {
 					go func(hostId int32, client raft.RaftNodeClient) {
 						args := &raft.AppendEntriesArgs{
@@ -246,31 +245,28 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						r, err := client.AppendEntries(ctx, args)
 						<-ctx.Done()
 						if err != nil {
-							log.Print("Append <-ctx.Done(): ", err)
-							rn.resetHeartBeatTimer(0)
+							//log.Print("Append <-ctx.Done(): ", err)
+							//rn.resetHeartBeatTimer(0)
 							//ctx2, cancel2 := context.WithTimeout(context.Background(),100*time.Millisecond)
 							//defer cancel2()
 							//client.AppendEntries(ctx2, args)
 						} else {
-							if r.GetSuccess() == false{
-								log.Print("false wor dllm!!!!, false node = ",r.GetFrom())
-							}
 							if r.GetSuccess(){
-								log.Print("node " ,r.GetFrom(), ": I report success with matchindex = ", r.GetMatchIndex())
+								//log.Print("node " ,r.GetFrom(), ": I report success with matchindex = ", r.GetMatchIndex())
 								rn.matchIndex[hostId] = r.GetMatchIndex()
 								rn.nextIndex[hostId] = r.GetMatchIndex()+1
 								if r.GetMatchIndex() == tempCommitIndex{
 									tempCounter++
 									if tempCounter >2 && r.GetMatchIndex() !=0{
 										rn.commitIndex = tempCommitIndex
-										log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
+										//log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
 										for _,v := range args.GetEntries(){
 											if v.GetOp()==raft.Operation_Put{
 												rn.kvstore[v.GetKey()]=v.GetValue()
 											} else if v.GetOp()==raft.Operation_Delete {
 												delete(rn.kvstore,v.GetKey())
 											}
-											log.Print("kvstore updated = ", rn.kvstore)
+											//log.Print("kvstore updated = ", rn.kvstore)
 										}
 									}
 								}
@@ -315,10 +311,10 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 			Key:   args.GetKey(),
 			Value: args.GetV(),
 		}
-		log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
+		//log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
 		rn.log = append(rn.log, logEntry)
 		rn.resetHeartBeatTimer(0)
-		log.Print("appended log = ", rn.log, time.Now())
+		//log.Print("appended log = ", rn.log, time.Now())
 		//for testing
 		//rn.kvstore[args.GetKey()]=args.GetV()
 		ret.Status = raft.Status_OK
@@ -343,14 +339,14 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 // args: the key to check
 // reply: the value and status for this lookup of the given key
 func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raft.GetValueReply, error) {
-	log.Printf("I am raftNode %d I am in GetValue(), my kvstore = %s, time =%s", rn.id, rn.kvstore, time.Now())
+	//log.Printf("I am raftNode %d I am in GetValue(), my kvstore = %s, time =%s", rn.id, rn.kvstore, time.Now())
 	// TODO: Implement this!
 	var ret raft.GetValueReply
 	if val, ok := rn.kvstore[args.GetKey()]; ok {
 		ret.V = val
 		ret.Status = raft.Status_KeyFound
 	}else{
-		log.Print(rn.id,": rn.GetValue() failed")
+		//log.Print(rn.id,": rn.GetValue() failed")
 		ret.Status = raft.Status_KeyNotFound
 	}
 	return &ret, nil
@@ -430,7 +426,7 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 		reply.MatchIndex = args.GetPrevLogIndex()
 	}else if args.GetPrevLogIndex()>0 && int32(len(rn.log)) >= args.GetPrevLogIndex() &&
 			rn.log[args.GetPrevLogIndex()-1].GetTerm() != args.GetPrevLogTerm() {
-		log.Print("PrevLogTerm NOT matched")
+		//log.Print("PrevLogTerm NOT matched")
 		reply.Success = false
 		reply.From = rn.id
 		reply.To = args.GetFrom()
@@ -453,12 +449,12 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 				} else if v.GetOp()==raft.Operation_Delete {
 					delete(rn.kvstore,v.GetKey())
 				}
-				log.Print("kvstore updated = ", rn.kvstore)
+				//log.Print("kvstore updated = ", rn.kvstore)
 			}
 			rn.commitIndex = args.GetLeaderCommit()
 		}
 		rn.log = append(rn.log,args.GetEntries()...)
-		log.Printf("node %d's apppened log = %s",rn.id, rn.log)
+		//log.Printf("node %d's apppened log = %s",rn.id, rn.log)
 		//log.Print("learder's PrevLogIndex = ",args.PrevLogIndex)
 		reply.Success = true
 		reply.From = rn.id
@@ -478,7 +474,7 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 // args: the heartbeat duration
 // reply: no use
 func (rn *raftNode) SetElectionTimeout(ctx context.Context, args *raft.SetElectionTimeoutArgs) (*raft.SetElectionTimeoutReply, error) {
-	log.Printf("I am raftNode %d I am in SetElectionTimeout() the timeout = %d", rn.id,args.Timeout)
+	//log.Printf("I am raftNode %d I am in SetElectionTimeout() the timeout = %d", rn.id,args.Timeout)
 	// TODO: Implement this!
 	var reply raft.SetElectionTimeoutReply
 	rn.electionTimeout = args.GetTimeout()
@@ -494,7 +490,7 @@ func (rn *raftNode) SetElectionTimeout(ctx context.Context, args *raft.SetElecti
 // args: the heartbeat duration
 // reply: no use
 func (rn *raftNode) SetHeartBeatInterval(ctx context.Context, args *raft.SetHeartBeatIntervalArgs) (*raft.SetHeartBeatIntervalReply, error) {
-	log.Printf("I am raftNode %d I am in SetHeartBeatInterval(), with heartbeat = %d", rn.id, args.GetInterval())
+	//log.Printf("I am raftNode %d I am in SetHeartBeatInterval(), with heartbeat = %d", rn.id, args.GetInterval())
 
 	// TODO: Implement this!
 	var reply raft.SetHeartBeatIntervalReply
@@ -505,7 +501,7 @@ func (rn *raftNode) SetHeartBeatInterval(ctx context.Context, args *raft.SetHear
 
 //NO NEED TO TOUCH THIS FUNCTION
 func (rn *raftNode) CheckEvents(context.Context, *raft.CheckEventsArgs) (*raft.CheckEventsReply, error) {
-	log.Printf("I am raftNode %d I am in CheckEvents()", rn.id)
+	//log.Printf("I am raftNode %d I am in CheckEvents()", rn.id)
 
 	return nil, nil
 }
