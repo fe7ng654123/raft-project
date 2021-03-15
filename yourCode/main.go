@@ -66,6 +66,7 @@ type raftNode struct {
 	electionTimer *time.Timer
 	heartBeatTimer *time.Timer
 	voteCounter int32
+	commitFlag chan bool
 }
 
 
@@ -107,6 +108,7 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 		heartBeatInterval: int32(heartBeatInterval),
 		electionTimer:	   time.NewTimer(time.Duration(electionTimeout) * time.Millisecond),
 		heartBeatTimer:	   time.NewTimer(time.Duration(heartBeatInterval) *time.Millisecond),
+		commitFlag: 		make(chan bool),
 	}
 
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", myport))
@@ -265,20 +267,28 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 									}
 								}
 								if tempCounter >2 && r.GetMatchIndex() !=0 && rn.commitIndex != tempCommitIndex{
-									rn.commitIndex = tempCommitIndex
+
 									log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
-									LogToCommit := rn.log[tempCommitIndex-1]
-									if LogToCommit.GetOp()==raft.Operation_Put{
-										rn.kvstore[LogToCommit.GetKey()]=LogToCommit.GetValue()
-									} else if LogToCommit.GetOp()==raft.Operation_Delete {
-										if _,ok := rn.kvstore[LogToCommit.GetKey()]; ok{
-											delete(rn.kvstore,LogToCommit.GetKey())
-										}else {
-											log.Print("cannot delete key, key not found!!")
+									for _,LogToCommit := range rn.log[rn.commitIndex:tempCommitIndex]{ ///TODO here!!
+										if LogToCommit.GetOp()==raft.Operation_Put{
+											rn.kvstore[LogToCommit.GetKey()]=LogToCommit.GetValue()
+											rn.commitFlag <- true
+											//time.Sleep(100*time.Millisecond)
+										} else if LogToCommit.GetOp()==raft.Operation_Delete {
+											if _,ok := rn.kvstore[LogToCommit.GetKey()]; ok{
+												delete(rn.kvstore,LogToCommit.GetKey())
+												rn.commitFlag <- true
+												//time.Sleep(100*time.Millisecond)
+											}else {
+												log.Print("cannot delete key, key not found!!")
+												rn.commitFlag <- false
+												//time.Sleep(100*time.Millisecond)
+											}
 
 										}
-
 									}
+									rn.commitIndex = tempCommitIndex
+									tempCommitIndex = Min(int32(len(rn.log)),rn.commitIndex+1)
 									log.Print("node ",rn.id, " kvstore updated = ", rn.kvstore)
 									//rn.resetHeartBeatTimer(0)
 								}
@@ -335,25 +345,9 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 		ret.Status=raft.Status_WrongNode
 		ret.CurrentLeader= rn.currentLeader
 	} else {
-		tempIndex := rn.commitIndex +1
+		//tempIndex := rn.commitIndex +1
 		log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
-		//flag := true
-		if args.GetOp() == raft.Operation_Delete{
-			if _,ok := rn.kvstore[args.GetKey()]; ok{
 
-			}else {
-				log.Print("cannot delete key, key not found!!")
-				ret.Status= raft.Status_KeyNotFound
-				ret.CurrentLeader = rn.id
-				//return &ret, nil
-			}
-		//	//if !flag{
-		//	//	log.Print("cannot add delete log, key not found!!")
-		//	//	ret.Status = raft.Status_KeyNotFound
-		//	//	ret.CurrentLeader = rn.id
-		//	//	return &ret, nil
-		//	//}
-		}
 		logEntry := &raft.LogEntry{
 			Term:  rn.currentTerm,
 			Op:    args.GetOp(),
@@ -363,20 +357,18 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 		rn.log = append(rn.log, logEntry)
 		//rn.resetHeartBeatTimer(0)
 		log.Print("appended log = ", rn.log, time.Now())
-		//for testing
-		//rn.kvstore[args.GetKey()]=args.GetV()
-		//if !flag{
-		//	log.Print("cannot add delete log, key not found!!")
-		//	ret.Status = raft.Status_KeyNotFound
-		//	ret.CurrentLeader = rn.id
-		//	return &ret, nil
+
+		//for rn.commitIndex < tempIndex{
 		//}
-
-		for rn.commitIndex < tempIndex{
-		}
-		ret.Status = raft.Status_OK
+		commitFlag:= <-rn.commitFlag
 		ret.CurrentLeader = rn.id
-
+		if commitFlag == false{
+			log.Print("commitFlag == false")
+			ret.Status= raft.Status_KeyNotFound
+		}else {
+			log.Print("commitFlag == true")
+			ret.Status = raft.Status_OK
+		}
 	}
 	return &ret, nil
 }
@@ -605,6 +597,13 @@ func Min(x, y int32) int32 {
 		return x
 	}
 	return y
+}
+
+func Max(x, y int32) int32 {
+	if x < y {
+		return y
+	}
+	return x
 }
 
 //func (rn *raftNode) resentAppend(client raft.RaftNodeClient,args *raft.AppendEntriesArgs) (r *raft.AppendEntriesReply,err error ){
