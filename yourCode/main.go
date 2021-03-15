@@ -184,11 +184,11 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 								log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
 								if rn.voteCounter>2 && rn.serverState != raft.Role_Leader{
 									rn.serverState = raft.Role_Leader
-									rn.resetHeartBeatTimer(0)
 									log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
 									//TODO : is it good to init here?
 									rn.matchIndex, rn.nextIndex = rn.initIdxforLeader(hostConnectionMap)
 									rn.currentLeader=rn.id
+									rn.resetHeartBeatTimer(0)
 									// revert candidate to follower
 									//if rn.voteCounter<3{
 									//	rn.serverState = raft.Role_Follower
@@ -328,27 +328,31 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.ProposeReply, error) {
 	//log.Printf("I am raftNode %d I am in Propose()" , rn.id)
 	// TODO: Implement this!
+
 	
 	var ret raft.ProposeReply
 	if rn.serverState != raft.Role_Leader{
 		ret.Status=raft.Status_WrongNode
 		ret.CurrentLeader= rn.currentLeader
 	} else {
+		tempIndex := rn.commitIndex +1
 		log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
-		flag := true
+		//flag := true
 		if args.GetOp() == raft.Operation_Delete{
-			flag = false
-			for _,v := range rn.log{
-				if v.GetKey()==args.GetKey(){
-					flag=true
-				}
+			if _,ok := rn.kvstore[args.GetKey()]; ok{
+
+			}else {
+				log.Print("cannot delete key, key not found!!")
+				ret.Status= raft.Status_KeyNotFound
+				ret.CurrentLeader = rn.id
+				//return &ret, nil
 			}
-			//if !flag{
-			//	log.Print("cannot add delete log, key not found!!")
-			//	ret.Status = raft.Status_KeyNotFound
-			//	ret.CurrentLeader = rn.id
-			//	return &ret, nil
-			//}
+		//	//if !flag{
+		//	//	log.Print("cannot add delete log, key not found!!")
+		//	//	ret.Status = raft.Status_KeyNotFound
+		//	//	ret.CurrentLeader = rn.id
+		//	//	return &ret, nil
+		//	//}
 		}
 		logEntry := &raft.LogEntry{
 			Term:  rn.currentTerm,
@@ -361,14 +365,17 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 		log.Print("appended log = ", rn.log, time.Now())
 		//for testing
 		//rn.kvstore[args.GetKey()]=args.GetV()
+		//if !flag{
+		//	log.Print("cannot add delete log, key not found!!")
+		//	ret.Status = raft.Status_KeyNotFound
+		//	ret.CurrentLeader = rn.id
+		//	return &ret, nil
+		//}
+
+		for rn.commitIndex < tempIndex{
+		}
 		ret.Status = raft.Status_OK
 		ret.CurrentLeader = rn.id
-		if !flag{
-			log.Print("cannot add delete log, key not found!!")
-			ret.Status = raft.Status_KeyNotFound
-			ret.CurrentLeader = rn.id
-			return &ret, nil
-		}
 
 	}
 	return &ret, nil
