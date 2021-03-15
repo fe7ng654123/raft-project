@@ -151,12 +151,12 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 	go func() {
 		for {
 			select {
-			case t:= <-rn.electionTimer.C:{
+			case <-rn.electionTimer.C:{
 				if rn.serverState == raft.Role_Leader{
 					break
 				}
 				rn.resetElectionTimer()
-				log.Printf("ElectTimer triggered node %d timeout = %d, t = %s",rn.id, rn.electionTimeout, t)
+				//log.Printf("ElectTimer triggered node %d timeout = %d, t = %s",rn.id, rn.electionTimeout, t)
 				rn.serverState = raft.Role_Candidate
 				rn.voteCounter =1
 				rn.votedFor = rn.id
@@ -177,25 +177,18 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						ctx, cancel := context.WithTimeout(context.Background(),100* time.Millisecond)
 						defer cancel()
 						r, err := client.RequestVote(ctx, rva)
-						//<-ctx.Done()
 						if err != nil {
-							log.Print("election <-ctx.Done(): ", err)
+							//log.Print("election <-ctx.Done() with err: ", err)
 						}else {
 							if r.VoteGranted ==true{
 								rn.voteCounter+=1
-								log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
+								//log.Printf("node %d voteCounter = %d",rn.id,rn.voteCounter)
 								if rn.voteCounter>2 && rn.serverState != raft.Role_Leader{
 									rn.serverState = raft.Role_Leader
 									log.Printf("node %d is Leader now!!!!!!!!!!!", rn.id)
-									//TODO : is it good to init here?
 									rn.matchIndex, rn.nextIndex = rn.initIdxforLeader(hostConnectionMap)
 									rn.currentLeader=rn.id
 									rn.resetHeartBeatTimer(0)
-									// revert candidate to follower
-									//if rn.voteCounter<3{
-									//	rn.serverState = raft.Role_Follower
-									//	log.Printf("candidate %d revert to follower", rn.id)
-									//}
 								}
 							}
 						}
@@ -248,17 +241,10 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						r, err := client.AppendEntries(ctx, args)
 						//<-ctx.Done()
 						if err != nil {
-							log.Print("Append <-ctx.Done(): ", err)
-							//rn.resetHeartBeatTimer(0)
-							//ctx2, cancel2 := context.WithTimeout(context.Background(),100*time.Millisecond)
-							//defer cancel2()
-							//client.AppendEntries(ctx2, args)
+							//log.Print("Append <-ctx.Done(): with err ", err)
 						} else {
-							if r.GetSuccess() == false{
-								log.Print("false wor dllm!!!!, false node = ",r.GetFrom())
-							}
 							if r.GetSuccess(){
-								log.Print("node " ,r.GetFrom(), ": I report success with matchindex = ", r.GetMatchIndex())
+								//log.Print("node " ,r.GetFrom(), ": I report success with matchindex = ", r.GetMatchIndex())
 								rn.matchIndex[hostId] = r.GetMatchIndex()
 								rn.nextIndex[hostId] = r.GetMatchIndex()+1
 								for _,v := range rn.matchIndex{
@@ -267,48 +253,28 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 									}
 								}
 								if tempCounter >2 && r.GetMatchIndex() !=0 && rn.commitIndex != tempCommitIndex{
-
 									log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
-									for _,LogToCommit := range rn.log[rn.commitIndex:tempCommitIndex]{ ///TODO here!!
+									for _,LogToCommit := range rn.log[rn.commitIndex:tempCommitIndex]{
 										if LogToCommit.GetOp()==raft.Operation_Put{
 											rn.kvstore[LogToCommit.GetKey()]=LogToCommit.GetValue()
 											rn.commitFlag <- true
-											//time.Sleep(100*time.Millisecond)
 										} else if LogToCommit.GetOp()==raft.Operation_Delete {
 											if _,ok := rn.kvstore[LogToCommit.GetKey()]; ok{
 												delete(rn.kvstore,LogToCommit.GetKey())
 												rn.commitFlag <- true
-												//time.Sleep(100*time.Millisecond)
 											}else {
 												log.Print("cannot delete key, key not found!!")
 												rn.commitFlag <- false
-												//time.Sleep(100*time.Millisecond)
 											}
 
 										}
 									}
 									rn.commitIndex = tempCommitIndex
 									tempCommitIndex = Min(int32(len(rn.log)),rn.commitIndex+1)
-									log.Print("node ",rn.id, " kvstore updated = ", rn.kvstore)
-									//rn.resetHeartBeatTimer(0)
+									tempCounter=1
+									//log.Print("node ",rn.id, " kvstore updated = ", rn.kvstore)
 								}
 
-								//if r.GetMatchIndex() == tempCommitIndex{
-								//	tempCounter++
-								//	if tempCounter >2 && r.GetMatchIndex() !=0{
-								//		rn.commitIndex = tempCommitIndex
-								//		log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
-								//
-								//		for _,v := range args.GetEntries(){
-								//			if v.GetOp()==raft.Operation_Put{
-								//				rn.kvstore[v.GetKey()]=v.GetValue()
-								//			} else if v.GetOp()==raft.Operation_Delete {
-								//				delete(rn.kvstore,v.GetKey())
-								//			}
-								//			log.Print("kvstore updated = ", rn.kvstore)
-								//		}
-								//	}
-								//}
 							}
 						}
 
@@ -338,16 +304,13 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.ProposeReply, error) {
 	//log.Printf("I am raftNode %d I am in Propose()" , rn.id)
 	// TODO: Implement this!
-
 	
 	var ret raft.ProposeReply
 	if rn.serverState != raft.Role_Leader{
 		ret.Status=raft.Status_WrongNode
 		ret.CurrentLeader= rn.currentLeader
 	} else {
-		//tempIndex := rn.commitIndex +1
 		log.Printf("in node %d ,args key = %s value = %d ops=%s",rn.id, args.GetKey(),args.GetV(), args.GetOp())
-
 		logEntry := &raft.LogEntry{
 			Term:  rn.currentTerm,
 			Op:    args.GetOp(),
@@ -355,11 +318,8 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 			Value: args.GetV(),
 		}
 		rn.log = append(rn.log, logEntry)
-		//rn.resetHeartBeatTimer(0)
-		log.Print("appended log = ", rn.log, time.Now())
+		//log.Print("appended log = ", rn.log, time.Now())
 
-		//for rn.commitIndex < tempIndex{
-		//}
 		commitFlag:= <-rn.commitFlag
 		ret.CurrentLeader = rn.id
 		if commitFlag == false{
@@ -381,15 +341,14 @@ func (rn *raftNode) Propose(ctx context.Context, args *raft.ProposeArgs) (*raft.
 // args: the key to check
 // reply: the value and status for this lookup of the given key
 func (rn *raftNode) GetValue(ctx context.Context, args *raft.GetValueArgs) (*raft.GetValueReply, error) {
-	log.Printf("I am raftNode %d I am in GetValue(), my kvstore = %s, time =%s", rn.id, rn.kvstore, time.Now())
+	//log.Printf("I am raftNode %d I am in GetValue(), my kvstore = %s, time =%s", rn.id, rn.kvstore, time.Now())
 	// TODO: Implement this!
 	var ret raft.GetValueReply
-	//log.Print("-----------",args.GetKey())
 	if val, ok := rn.kvstore[args.GetKey()]; ok {
 		ret.V = val
 		ret.Status = raft.Status_KeyFound
 	}else{
-		log.Print(rn.id,": rn.GetValue() failed")
+		//log.Print(rn.id,": rn.GetValue() failed, keyNOtFound")
 		ret.Status = raft.Status_KeyNotFound
 	}
 	return &ret, nil
@@ -451,7 +410,6 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 	// TODO: Implement this ; heartbeat can be identified using the 0 length log entry
 	var reply raft.AppendEntriesReply
 
-	//ok for now
 	rn.resetElectionTimer()
 	rn.serverState = raft.Role_Follower
 
@@ -479,23 +437,25 @@ func (rn *raftNode) AppendEntries(ctx context.Context, args *raft.AppendEntriesA
 		rn.log = rn.log[0:args.GetPrevLogIndex()]
 	}else if args.GetTerm()>=rn.currentTerm{
 		rn.currentLeader = args.GetFrom()
-		//if args.GetFrom()!=rn.currentLeader {
-		//	rn.currentLeader =args.GetFrom()
-		//}
 		if int32(len(rn.log)) > args.PrevLogIndex{
 			rn.log = rn.log[:args.PrevLogIndex]
 		}
 		rn.log = append(rn.log,args.GetEntries()...)
-		log.Printf("node %d's apppened log = %s",rn.id, rn.log)
+		//log.Printf("node %d's apppened log = %s",rn.id, rn.log)
 		rn.currentTerm = args.GetTerm()
 		if rn.commitIndex < args.GetLeaderCommit(){
 			for _,v := range rn.log[rn.commitIndex:args.GetLeaderCommit()]{
 				if v.GetOp()==raft.Operation_Put{
 					rn.kvstore[v.GetKey()]=v.GetValue()
 				} else if v.GetOp()==raft.Operation_Delete {
-					delete(rn.kvstore,v.GetKey())
+					//delete(rn.kvstore,v.GetKey())
+					if _,ok := rn.kvstore[v.GetKey()]; ok{
+						delete(rn.kvstore,v.GetKey())
+					}else {
+						log.Print("cannot delete key, key not found!!")
+					}
 				}
-				log.Print("node ", rn.id," kvstore updated = ", rn.kvstore)
+				//log.Print("node ", rn.id," kvstore updated = ", rn.kvstore)
 			}
 			rn.commitIndex = args.GetLeaderCommit()
 		}
@@ -560,7 +520,6 @@ func (rn *raftNode) resetElectionTimer() () {
 			//log.Print("drained default")
 		}
 	}
-	//rn.electionTimer.Stop()
 	rn.electionTimer.Reset(time.Duration(rn.electionTimeout)*time.Millisecond)
 }
 
@@ -573,9 +532,7 @@ func (rn *raftNode) resetHeartBeatTimer(d int32) {
 			//log.Print("drained default")
 		}
 	}
-	//rn.heartBeatTimer.Stop()
 	rn.heartBeatTimer.Reset(time.Duration(d)*time.Millisecond)
-	//log.Print("heart channel getvalue = ", <-rn.heartBeatTimer.C)
 }
 
 func (rn *raftNode) initIdxforLeader( hostmap map[int32]raft.RaftNodeClient) (map[int32]int32, map[int32]int32) {
@@ -598,27 +555,3 @@ func Min(x, y int32) int32 {
 	}
 	return y
 }
-
-func Max(x, y int32) int32 {
-	if x < y {
-		return y
-	}
-	return x
-}
-
-//func (rn *raftNode) resentAppend(client raft.RaftNodeClient,args *raft.AppendEntriesArgs) (r *raft.AppendEntriesReply,err error ){
-//	ctx, cancel := context.WithTimeout(context.Background(),100*time.Millisecond)
-//	defer cancel()
-//	r, err = client.AppendEntries(ctx, args)
-//	go func() {
-//		select {
-//		case <-ctx.Done():
-//			if err != nil {
-//				fmt.Println("Append <-ctx.Done(): ", err)
-//			}
-//			log.Print("let me resentAppend here")
-//			rn.resentAppend(client,args)
-//		}
-//	}()
-//	return r, err
-//}

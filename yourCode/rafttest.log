@@ -587,3 +587,4 @@
 2021/03/15 04:10:12 testOneSimplePut PASS
 2021/03/15 04:10:22 testOneSimpleUpdate PASS
 2021/03/15 04:10:35 testOneSimpleDelete PASS
+2021/03/15 04:15:36 testDeleteNonExistKey PASS
