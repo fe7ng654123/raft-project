@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -67,6 +68,7 @@ type raftNode struct {
 	heartBeatTimer *time.Timer
 	voteCounter int32
 	commitFlag chan bool
+	lock sync.Mutex
 }
 
 
@@ -245,8 +247,10 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 						} else {
 							if r.GetSuccess(){
 								//log.Print("node " ,r.GetFrom(), ": I report success with matchindex = ", r.GetMatchIndex())
+								rn.lock.Lock()
 								rn.matchIndex[hostId] = r.GetMatchIndex()
 								rn.nextIndex[hostId] = r.GetMatchIndex()+1
+								rn.lock.Unlock()
 								for _,v := range rn.matchIndex{
 									if v>=tempCommitIndex{
 										tempCounter++
