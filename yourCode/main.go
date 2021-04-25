@@ -250,21 +250,26 @@ func NewRaftNode(myport int, nodeidPortMap map[int]int, nodeId, heartBeatInterva
 								rn.lock.Lock()
 								rn.matchIndex[hostId] = r.GetMatchIndex()
 								rn.nextIndex[hostId] = r.GetMatchIndex()+1
-								rn.lock.Unlock()
+
 								for _,v := range rn.matchIndex{
 									if v>=tempCommitIndex{
 										tempCounter++
 									}
 								}
+								rn.lock.Unlock()
 								if tempCounter >2 && r.GetMatchIndex() !=0 && rn.commitIndex != tempCommitIndex{
 									log.Print("Leader replicated logs in majority!!!!! update rn.commitIndex = ", tempCommitIndex)
 									for _,LogToCommit := range rn.log[rn.commitIndex:tempCommitIndex]{
 										if LogToCommit.GetOp()==raft.Operation_Put{
+											rn.lock.Lock()
 											rn.kvstore[LogToCommit.GetKey()]=LogToCommit.GetValue()
+											rn.lock.Unlock()
 											rn.commitFlag <- true
 										} else if LogToCommit.GetOp()==raft.Operation_Delete {
 											if _,ok := rn.kvstore[LogToCommit.GetKey()]; ok{
+												rn.lock.Lock()
 												delete(rn.kvstore,LogToCommit.GetKey())
+												rn.lock.Unlock()
 												rn.commitFlag <- true
 											}else {
 												log.Print("cannot delete key, key not found!!")
